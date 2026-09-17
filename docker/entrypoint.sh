@@ -1,35 +1,56 @@
 #!/bin/sh
-# Maps environment variables to openflux flags and, for the exit node,
-# installs the kernel-RST-drop rule *inside this container's netns*.
-#
-# Why the rule: the exit node's TCP connections live in a userspace (gVisor)
-# stack, so the kernel has no socket for them and answers every inbound
-# SYN-ACK with an RST, tearing the tunnel down. Confining the DROP to the
-# container netns is the scoped variant of upstream's host-wide rule — it
-# cannot affect the host or other containers.
 set -eu
 
-role="${ROLE:-client}"
-transport="${TRANSPORT:-yandex}"
+role="${ROLE:-exit-node}"
+transport="${TRANSPORT:-vyandex}"
 listen="${SOCKS5_LISTEN:-:1080}"
+codec="${CODEC:-batched}"
+mode="${MODE:-l4}"
 
 case "$role" in
-  client|exit-node) ;;
+  client|exit-node|exit) ;;
   *)
-    echo "ROLE must be 'client' or 'exit-node' (got '$role')" >&2
+    echo "ROLE must be client, exit-node or exit (got '$role')" >&2
     exit 2
     ;;
 esac
+
+if [ "$role" = exit ]; then
+  role=exit-node
+fi
 
 case "$transport" in
-  yandex|vyandex|oneme) ;;
+  yandex|vyandex|oneme|cupsonline|mailru) ;;
   *)
-    echo "TRANSPORT must be one of yandex, vyandex, oneme (got '$transport')" >&2
+    echo "TRANSPORT invalid: $transport" >&2
     exit 2
     ;;
 esac
 
-set -- "--$role" --transport "$transport"
+case "$codec" in
+  batched|legacy) ;;
+  *)
+    echo "CODEC must be batched or legacy (got '$codec')" >&2
+    exit 2
+    ;;
+esac
+
+case "$mode" in
+  l3|l4|proxy|raw)
+    if [ "$mode" = proxy ]; then mode=l4; fi
+    if [ "$mode" = raw ]; then mode=l3; fi
+    ;;
+  *)
+    echo "MODE must be l4 or l3 (got '$mode')" >&2
+    exit 2
+    ;;
+esac
+
+set -- "--$role" --transport "$transport" --codec "$codec"
+
+if [ "$role" = exit-node ]; then
+  set -- "$@" --mode "$mode"
+fi
 
 if [ "$role" = client ]; then
   set -- "$@" --socks5 "$listen"
@@ -45,9 +66,6 @@ if [ -n "${MAX_UID:-}" ]; then
   set -- "$@" --maxUid "$MAX_UID"
 fi
 if [ -n "${LOCAL_IP:-}" ]; then
-  # Optional: pin the egress IP (alias IP) so the RST drop could be scoped
-  # with `-s <ip>` too; inside a dedicated container netns it's usually
-  # unnecessary.
   set -- "$@" --local-ip "$LOCAL_IP"
 fi
 case "${DEBUG:-0}" in
@@ -57,7 +75,7 @@ esac
 if [ "$role" = exit-node ]; then
   echo "[entrypoint] dropping outbound TCP RSTs inside the container netns"
   if ! iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP; then
-    echo "[entrypoint] WARNING: iptables failed (missing NET_ADMIN?); kernel RSTs will kill tunnel connections" >&2
+    echo "[entrypoint] WARNING: iptables failed (missing NET_ADMIN?)" >&2
   fi
 fi
 
