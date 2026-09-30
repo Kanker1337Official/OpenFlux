@@ -5,6 +5,7 @@ role="${ROLE:-exit-node}"
 transport="${TRANSPORT:-vyandex}"
 codec="${CODEC:-batched}"
 mode="${MODE:-l4}"
+RESTART_EVERY="${RESTART_EVERY:-7200}"
 
 if [ "$role" = exit ]; then
   role=exit-node
@@ -23,24 +24,9 @@ echo "[entrypoint] dropping outbound TCP RSTs inside the container netns"
 iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP 2>/dev/null || \
   echo "[entrypoint] WARNING: iptables failed (missing NET_ADMIN?)" >&2
 
-RESTART_EVERY="${RESTART_EVERY:-7200}"
-
 while true; do
-  echo "[entrypoint] exec: openflux $*"
-  openflux "$@" &
-  pid=$!
-  echo "[entrypoint] pid=$pid, restart in ${RESTART_EVERY}s"
-  sleep "$RESTART_EVERY" &
-  sleep_pid=$!
-  wait "$pid" || true
-  kill "$sleep_pid" 2>/dev/null || true
-  wait "$sleep_pid" 2>/dev/null || true
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "[entrypoint] scheduled restart, killing $pid"
-    kill "$pid" 2>/dev/null || true
-    sleep 2
-    kill -9 "$pid" 2>/dev/null || true
-  fi
-  echo "[entrypoint] restarting openflux"
+  echo "[entrypoint] exec: timeout ${RESTART_EVERY}s openflux $*"
+  timeout "$RESTART_EVERY" openflux "$@" || true
+  echo "[entrypoint] killed after ${RESTART_EVERY}s, restarting in 3s"
   sleep 3
 done
