@@ -1,19 +1,19 @@
 #!/bin/sh
 set -eu
 
-role="${ROLE:-exit}"
-transport="${TRANSPORT:-cupsonline}"
+role="${ROLE:-exit-node}"
+transport="${TRANSPORT:-vyandex}"
 codec="${CODEC:-batched}"
 mode="${MODE:-l4}"
 RESTART_EVERY="${RESTART_EVERY:-7200}"
 
-case "$role" in
-  exit-node) role=exit ;;
-esac
+if [ "$role" = exit ]; then
+  role=exit-node
+fi
 
-set -- --role "$role" --transport "$transport" --codec "$codec" --mode "$mode"
+set -- "--$role" --transport "$transport" --codec "$codec" --mode "$mode"
 
-[ -n "${URL:-}" ] && [ "$URL" != "http://#" ] && set -- "$@" --url "$URL"
+[ -n "${URL:-}" ] && set -- "$@" --url "$URL"
 [ -n "${MAX_TOKEN:-}" ] && set -- "$@" --maxToken "$MAX_TOKEN"
 [ -n "${MAX_UID:-}" ] && set -- "$@" --maxUid "$MAX_UID"
 case "${DEBUG:-0}" in
