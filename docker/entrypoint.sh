@@ -1,65 +1,32 @@
 #!/bin/sh
-# Maps environment variables to openflux flags and, for the exit node,
-# installs the kernel-RST-drop rule *inside this container's netns*.
-#
-# Why the rule: the exit node's TCP connections live in a userspace (gVisor)
-# stack, so the kernel has no socket for them and answers every inbound
-# SYN-ACK with an RST, tearing the tunnel down. Confining the DROP to the
-# container netns is the scoped variant of upstream's host-wide rule — it
-# cannot affect the host or other containers.
 set -eu
 
-role="${ROLE:-client}"
-transport="${TRANSPORT:-yandex}"
-listen="${SOCKS5_LISTEN:-:1080}"
+role="${ROLE:-exit-node}"
+transport="${TRANSPORT:-vyandex}"
+codec="${CODEC:-batched}"
+mode="${MODE:-l4}"
+RESTART_EVERY="${RESTART_EVERY:-7200}"
 
-case "$role" in
-  client|exit-node) ;;
-  *)
-    echo "ROLE must be 'client' or 'exit-node' (got '$role')" >&2
-    exit 2
-    ;;
-esac
-
-case "$transport" in
-  yandex|vyandex|oneme) ;;
-  *)
-    echo "TRANSPORT must be one of yandex, vyandex, oneme (got '$transport')" >&2
-    exit 2
-    ;;
-esac
-
-set -- "--$role" --transport "$transport"
-
-if [ "$role" = client ]; then
-  set -- "$@" --socks5 "$listen"
+if [ "$role" = exit ]; then
+  role=exit-node
 fi
 
-if [ -n "${URL:-}" ]; then
-  set -- "$@" --url "$URL"
-fi
-if [ -n "${MAX_TOKEN:-}" ]; then
-  set -- "$@" --maxToken "$MAX_TOKEN"
-fi
-if [ -n "${MAX_UID:-}" ]; then
-  set -- "$@" --maxUid "$MAX_UID"
-fi
-if [ -n "${LOCAL_IP:-}" ]; then
-  # Optional: pin the egress IP (alias IP) so the RST drop could be scoped
-  # with `-s <ip>` too; inside a dedicated container netns it's usually
-  # unnecessary.
-  set -- "$@" --local-ip "$LOCAL_IP"
-fi
+set -- "--$role" --transport "$transport" --codec "$codec" --mode "$mode"
+
+[ -n "${URL:-}" ] && set -- "$@" --url "$URL"
+[ -n "${MAX_TOKEN:-}" ] && set -- "$@" --maxToken "$MAX_TOKEN"
+[ -n "${MAX_UID:-}" ] && set -- "$@" --maxUid "$MAX_UID"
 case "${DEBUG:-0}" in
   1|true|yes) set -- "$@" --debug ;;
 esac
 
-if [ "$role" = exit-node ]; then
-  echo "[entrypoint] dropping outbound TCP RSTs inside the container netns"
-  if ! iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP; then
-    echo "[entrypoint] WARNING: iptables failed (missing NET_ADMIN?); kernel RSTs will kill tunnel connections" >&2
-  fi
-fi
+echo "[entrypoint] dropping outbound TCP RSTs inside the container netns"
+iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP 2>/dev/null || \
+  echo "[entrypoint] WARNING: iptables failed (missing NET_ADMIN?)" >&2
 
-echo "[entrypoint] exec: openflux $*"
-exec openflux "$@"
+while true; do
+  echo "[entrypoint] exec: timeout ${RESTART_EVERY}s openflux $*"
+  timeout "$RESTART_EVERY" openflux "$@" || true
+  echo "[entrypoint] killed after ${RESTART_EVERY}s, restarting in 3s"
+  sleep 3
+done
